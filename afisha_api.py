@@ -27,6 +27,7 @@ SESSION_KEY — base64 от "2966|732357|3292147|1788019200000"
 """
 
 import logging
+import re
 
 import requests
 
@@ -47,6 +48,61 @@ HEADERS = {
 
 class HallplanError(Exception):
     """Не удалось получить/разобрать схему зала."""
+
+
+# Кириллические двойники латинских букв: пользователь может написать "С134"
+# русской С — нормализуем, чтобы фильтр не промахнулся.
+_CYRILLIC_LOOKALIKES = str.maketrans("АВСЕНКМОРТУХ", "ABCEHKMOPTYX")
+
+_SECTOR_CODE_RE = re.compile(r"([A-Za-zА-Яа-я])\s?(\d+)")
+
+
+def _norm_letter(ch):
+    return ch.upper().translate(_CYRILLIC_LOOKALIKES)
+
+
+def parse_sectors(spec):
+    """Разбирает SECTORS из .env: "C134-C139,A109-A112" или "C134,A110".
+
+    Возвращает список (буква, от, до) или None, если фильтр не задан.
+    Непонятный формат — ValueError (лучше упасть на старте, чем молча
+    мониторить не те сектора).
+    """
+    spec = (spec or "").strip()
+    if not spec:
+        return None
+    out = []
+    for token in spec.split(","):
+        token = token.strip()
+        if not token:
+            continue
+        m = re.fullmatch(
+            r"([A-Za-zА-Яа-я])\s?(\d+)(?:\s?-\s?([A-Za-zА-Яа-я])?\s?(\d+))?", token
+        )
+        if not m:
+            raise ValueError("непонятный сектор в SECTORS: {!r}".format(token))
+        letter = _norm_letter(m.group(1))
+        if m.group(3) and _norm_letter(m.group(3)) != letter:
+            raise ValueError("в диапазоне разные буквы секторов: {!r}".format(token))
+        lo = int(m.group(2))
+        hi = int(m.group(4)) if m.group(4) else lo
+        out.append((letter, min(lo, hi), max(lo, hi)))
+    return out or None
+
+
+def sector_matches(level_name, allowed):
+    """True, если сектор из названия уровня попадает в фильтр allowed.
+
+    allowed=None — фильтра нет, подходит всё. Уровень без кода сектора
+    в названии ("Танцпол") при включённом фильтре не подходит.
+    """
+    if not allowed:
+        return True
+    m = _SECTOR_CODE_RE.search(level_name)
+    if not m:
+        return False
+    letter, num = _norm_letter(m.group(1)), int(m.group(2))
+    return any(letter == lt and lo <= num <= hi for lt, lo, hi in allowed)
 
 
 def fetch_hallplan(session_key, client_key, timeout=30):
@@ -119,9 +175,11 @@ def fetch_locked_seat_ids(session_key, client_key, timeout=30):
     return ids
 
 
-def extract_seats(hallplan, locked_ids=frozenset(), ignore_limited_view=False):
+def extract_seats(hallplan, locked_ids=frozenset(), ignore_limited_view=False,
+                  allowed_sectors=None):
     """Разворачивает hallplan в плоский список свободных мест.
 
+    allowed_sectors — результат parse_sectors(); None = без фильтра по секторам.
     Возвращает список dict:
       {"level": str, "row": str, "place": int, "price": int, "total": int, "seat_id": str}
     Цены — в РУБЛЯХ. Места с ненумеруемым place (например "7А") пропускаются
@@ -132,6 +190,8 @@ def extract_seats(hallplan, locked_ids=frozenset(), ignore_limited_view=False):
         if level.get("admission"):
             continue  # танцпол/фан-зона — нет нумерованных мест
         name = level.get("name", "?")
+        if not sector_matches(name, allowed_sectors):
+            continue
         if ignore_limited_view and "ограниченная видимость" in name.lower():
             continue
         for s in level.get("seats") or []:

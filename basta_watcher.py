@@ -75,7 +75,14 @@ def setup_logging():
 
 def load_config():
     load_dotenv(BASE_DIR / ".env")
+    sectors_raw = os.getenv("SECTORS", "")
+    try:
+        sectors = afisha_api.parse_sectors(sectors_raw)
+    except ValueError as exc:
+        raise SystemExit("Ошибка в SECTORS: {}".format(exc))
     return {
+        "sectors_raw": sectors_raw or "все",
+        "sectors": sectors,
         "token": os.getenv("TELEGRAM_BOT_TOKEN", ""),
         "chat_id": os.getenv("TELEGRAM_CHAT_ID", ""),
         "session_key": os.getenv("SESSION_KEY", DEFAULT_SESSION_KEY),
@@ -135,7 +142,9 @@ def check_once(cfg):
     hallplan = afisha_api.fetch_hallplan(cfg["session_key"], cfg["client_key"])
     locked = afisha_api.fetch_locked_seat_ids(cfg["session_key"], cfg["client_key"])
     seats = afisha_api.extract_seats(
-        hallplan, locked_ids=locked, ignore_limited_view=cfg["ignore_limited_view"]
+        hallplan, locked_ids=locked,
+        ignore_limited_view=cfg["ignore_limited_view"],
+        allowed_sectors=cfg["sectors"],
     )
     runs = afisha_api.find_runs(seats, cfg["max_price"], cfg["seats_needed"])
     log.info(
@@ -148,7 +157,7 @@ def check_once(cfg):
 HELP_TEXT = (
     "Команды:\n"
     "/check — что доступно прямо сейчас (по настроенным критериям)\n"
-    "/check all — то же, но включая сектора с ограниченной видимостью"
+    "/check all — то же по всему залу (без фильтра секторов и видимости)"
 )
 
 
@@ -164,14 +173,16 @@ def handle_command(cfg, text):
         cfg_check = dict(cfg)
         if len(parts) > 1 and parts[1].lower() in ("all", "все", "всё"):
             cfg_check["ignore_limited_view"] = False
+            cfg_check["sectors"] = None  # весь зал
         try:
             runs = check_once(cfg_check)
         except Exception as exc:  # noqa: BLE001 — ошибку показываем пользователю
             log.exception("ручная проверка не удалась")
             return "Ошибка проверки: {}".format(exc)
         if not runs:
-            return "Подходящих мест сейчас нет (≤{}₽, {} рядом{}).".format(
+            return "Подходящих мест сейчас нет (≤{}₽, {} рядом, сектора: {}{}).".format(
                 cfg_check["max_price"], cfg_check["seats_needed"],
+                cfg["sectors_raw"] if cfg_check["sectors"] else "все",
                 ", без ограниченной видимости" if cfg_check["ignore_limited_view"] else "",
             )
         lines = ["Сейчас доступно ({} вариантов):".format(len(runs)), ""]
@@ -230,8 +241,9 @@ def watch_loop(cfg):
 
     log.info(
         "старт мониторинга: интервал %sс, максимум %s₽/билет, мест рядом: %s, "
-        "игнорировать ограниченную видимость: %s",
-        cfg["interval"], cfg["max_price"], cfg["seats_needed"], cfg["ignore_limited_view"],
+        "сектора: %s, игнорировать ограниченную видимость: %s",
+        cfg["interval"], cfg["max_price"], cfg["seats_needed"],
+        cfg["sectors_raw"], cfg["ignore_limited_view"],
     )
 
     threading.Thread(target=bot_command_loop, args=(cfg,), daemon=True,

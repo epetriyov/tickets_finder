@@ -10,7 +10,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from afisha_api import extract_seats, find_runs
+import pytest
+
+from afisha_api import extract_seats, find_runs, parse_sectors, sector_matches
 
 
 def seat(row, place, price_rub, seat_id=None):
@@ -89,6 +91,36 @@ def test_find_runs_does_not_join_rows_or_levels():
         level("Сектор B", [seat(1, 6, 5000)]),
     )
     assert find_runs(extract_seats(hp), max_price=15000, seats_needed=2) == []
+
+
+def test_parse_sectors():
+    assert parse_sectors("") is None
+    assert parse_sectors("C134-C139,A109-A112") == [("C", 134, 139), ("A", 109, 112)]
+    assert parse_sectors("A110") == [("A", 110, 110)]
+    assert parse_sectors("С134-С139") == [("C", 134, 139)]  # кириллическая С
+    with pytest.raises(ValueError):
+        parse_sectors("ерунда")
+    with pytest.raises(ValueError):
+        parse_sectors("C134-A139")  # разные буквы в диапазоне
+
+
+def test_sector_matches():
+    allowed = parse_sectors("C134-C139,A109-A112")
+    assert sector_matches("Сектор C134", allowed)
+    assert sector_matches("Сектор A110 (VIP)", allowed)
+    assert not sector_matches("Сектор C141 (ограниченная видимость)", allowed)
+    assert not sector_matches("Сектор D118", allowed)
+    assert not sector_matches("Танцпол", allowed)
+    assert sector_matches("Танцпол", None)  # без фильтра подходит всё
+
+
+def test_extract_seats_sector_filter():
+    hp = hallplan(
+        level("Сектор C134", [seat(1, 1, 6000), seat(1, 2, 6000)]),
+        level("Сектор D118", [seat(5, 3, 8000), seat(5, 4, 8000)]),
+    )
+    seats = extract_seats(hp, allowed_sectors=parse_sectors("C134-C139,A109-A112"))
+    assert {s["level"] for s in seats} == {"Сектор C134"}
 
 
 def test_handle_command_help_and_unknown():
