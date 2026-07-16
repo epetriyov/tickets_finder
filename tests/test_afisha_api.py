@@ -80,6 +80,15 @@ def test_find_runs_collapses_adjacent_and_filters_price():
     assert run["seat_keys"] == ["Сектор A|31|8", "Сектор A|31|9", "Сектор A|31|10"]
 
 
+def test_max_price_is_inclusive():
+    hp = hallplan(level("Сектор A", [
+        seat(1, 1, 15000), seat(1, 2, 15000),   # ровно на границе — подходят
+        seat(2, 1, 15001), seat(2, 2, 15001),   # на рубль дороже — нет
+    ]))
+    runs = find_runs(extract_seats(hp), max_price=15000, seats_needed=2)
+    assert [(r["row"], r["price_min"]) for r in runs] == [("1", 15000)]
+
+
 def test_find_runs_respects_seats_needed():
     hp = hallplan(level("Сектор A", [seat(1, 1, 5000), seat(1, 2, 5000)]))
     seats = extract_seats(hp)
