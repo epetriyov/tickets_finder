@@ -10,9 +10,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from urllib.parse import parse_qs, unquote, urlparse
+
 import pytest
 
-from afisha_api import extract_seats, find_runs, parse_sectors, sector_matches
+from afisha_api import buy_link, extract_seats, find_runs, parse_sectors, sector_matches
 
 
 def seat(row, place, price_rub, seat_id=None):
@@ -30,8 +32,8 @@ def hallplan(*levels):
     return {"levels": list(levels), "availableSeatCount": 0}
 
 
-def level(name, seats, admission=False):
-    return {"name": name, "admission": admission, "seats": seats}
+def level(name, seats, admission=False, level_id=7):
+    return {"name": name, "admission": admission, "seats": seats, "id": level_id}
 
 
 def test_extract_seats_basic():
@@ -39,7 +41,7 @@ def test_extract_seats_basic():
     seats = extract_seats(hp)
     assert len(seats) == 2
     assert seats[0] == {
-        "level": "Сектор B105", "row": "23", "place": 5,
+        "level": "Сектор B105", "level_id": 7, "row": "23", "place": 5,
         "price": 12000, "total": 13200, "seat_id": "1-23-5",
     }
 
@@ -132,13 +134,32 @@ def test_handle_command_help_and_unknown():
     assert basta_watcher.handle_command(cfg, "просто текст") is None
 
 
-def test_find_runs_sorted_by_price_then_numeric_row():
+def test_find_runs_sorted_by_price_desc_then_numeric_row():
     hp = hallplan(
         level("Сектор A", [seat(10, 1, 7000), seat(10, 2, 7000),
                            seat(2, 1, 7000), seat(2, 2, 7000)]),
         level("Сектор B", [seat(1, 1, 3500), seat(1, 2, 3500)]),
     )
     runs = find_runs(extract_seats(hp), max_price=15000, seats_needed=2)
+    # дорогие варианты первыми, внутри одной цены — ряды по возрастанию
     assert [(r["level"], r["row"]) for r in runs] == [
-        ("Сектор B", "1"), ("Сектор A", "2"), ("Сектор A", "10"),
+        ("Сектор A", "2"), ("Сектор A", "10"), ("Сектор B", "1"),
+    ]
+
+
+def test_buy_link_picks_most_expensive_window():
+    hp = hallplan(level("Сектор A", [
+        seat(3, 1, 5000), seat(3, 2, 5000), seat(3, 3, 9000), seat(3, 4, 9000),
+    ], level_id=62))
+    runs = find_runs(extract_seats(hp), max_price=15000, seats_needed=2)
+    assert len(runs) == 1
+    url = buy_link("KEY", runs[0], seats_needed=2)
+    parsed = urlparse(url)
+    assert parsed.path == "/w/sessions/KEY"
+    import json
+    payload = json.loads(unquote(parse_qs(parsed.query)["selectedSeats"][0]))
+    # из цепочки 1-4 взято самое дорогое окно: места 3 и 4 по 9000
+    assert payload == [
+        {"level": 62, "row": "3", "place": "3"},
+        {"level": 62, "row": "3", "place": "4"},
     ]

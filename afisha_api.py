@@ -200,6 +200,7 @@ def extract_seats(hallplan, locked_ids=frozenset(), ignore_limited_view=False,
                 price_info = s["priceInfo"]
                 seat = {
                     "level": name,
+                    "level_id": level.get("id"),
                     "row": str(info["row"]),
                     "place": int(str(info["place"])),
                     "price": price_info["price"]["value"] // 100,
@@ -223,9 +224,11 @@ def find_runs(seats, max_price, seats_needed=2):
     """Ищет цепочки из >= seats_needed СОСЕДНИХ свободных мест в одном ряду,
     где каждое место не дороже max_price рублей.
 
-    Возвращает список dict, отсортированный по возрастанию цены:
-      {"level", "row", "places": [int, ...], "price_min", "price_max",
-       "total_min", "total_max", "seat_keys": ["level|row|place", ...]}
+    Возвращает список dict, отсортированный по УБЫВАНИЮ цены (пользователь
+    предпочитает более дорогие варианты):
+      {"level", "level_id", "row", "places": [int, ...], "seats": [seat, ...],
+       "price_min", "price_max", "total_min", "total_max",
+       "seat_keys": ["level|row|place", ...]}
     Пересекающиеся пары схлопнуты в одну цепочку: места 8,9,10 подряд — это
     одна запись places=[8,9,10], а не пары (8,9) и (9,10).
     """
@@ -245,8 +248,10 @@ def find_runs(seats, max_price, seats_needed=2):
                     group = [row_seats[x] for x in chain]
                     runs.append({
                         "level": level,
+                        "level_id": group[0].get("level_id"),
                         "row": row,
                         "places": list(chain),
+                        "seats": group,
                         "price_min": min(g["price"] for g in group),
                         "price_max": max(g["price"] for g in group),
                         "total_min": min(g["total"] for g in group),
@@ -263,5 +268,35 @@ def find_runs(seats, max_price, seats_needed=2):
         except ValueError:
             return (1, row)
 
-    runs.sort(key=lambda r: (r["price_min"], r["level"], row_sort_key(r["row"])))
+    # Дорогие варианты — первыми (пожелание пользователя)
+    runs.sort(key=lambda r: (-r["price_min"], r["level"], row_sort_key(r["row"])))
     return runs
+
+
+def buy_link(session_key, run, seats_needed=2):
+    """Прямая ссылка на виджет с уже добавленными в корзину местами.
+
+    Формат подтверждён экспериментально 16.07.2026: параметр selectedSeats —
+    URL-encoded JSON [{"level": <id уровня>, "row": "...", "place": "..."}].
+    Виджет добавляет места в корзину, только если ВСЕ они ещё свободны,
+    иначе просто откроется схема — это ок.
+
+    Из цепочки берём seats_needed ПОДРЯД идущих мест с максимальной суммарной
+    ценой (пользователь предпочитает более дорогие).
+    """
+    import json as _json
+    from urllib.parse import quote
+
+    seats = run["seats"]
+    n = min(seats_needed, len(seats))
+    best = max(
+        (seats[i:i + n] for i in range(len(seats) - n + 1)),
+        key=lambda w: sum(s["price"] for s in w),
+    )
+    payload = _json.dumps(
+        [{"level": s["level_id"], "row": s["row"], "place": str(s["place"])} for s in best],
+        separators=(",", ":"), ensure_ascii=False,
+    )
+    return "{}/w/sessions/{}?selectedSeats={}".format(
+        WIDGET_BASE, session_key, quote(payload, safe="")
+    )

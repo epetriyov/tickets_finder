@@ -19,19 +19,26 @@ class WebhookConflict(TelegramError):
     для вотчера или deleteWebhook, см. README)."""
 
 
-def send_message(token, chat_id, text, timeout=30):
-    """Шлёт сообщение. Возвращает True при успехе, исключений не бросает."""
+def send_message(token, chat_id, text, timeout=30, parse_mode=None):
+    """Шлёт сообщение. Возвращает True при успехе, исключений не бросает.
+
+    parse_mode="HTML" — для сообщений со ссылками <a href>; динамический
+    текст при этом должен быть прогнан через html.escape на стороне вызова.
+    """
     if not token or not chat_id:
         log.error("Telegram: не заданы TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID")
         return False
+    payload = {
+        "chat_id": chat_id,
+        "text": text,
+        "disable_web_page_preview": True,
+    }
+    if parse_mode:
+        payload["parse_mode"] = parse_mode
     try:
         resp = requests.post(
             API_URL.format(token=token),
-            json={
-                "chat_id": chat_id,
-                "text": text,
-                "disable_web_page_preview": True,
-            },
+            json=payload,
             timeout=timeout,
         )
         data = resp.json()
