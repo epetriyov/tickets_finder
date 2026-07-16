@@ -1,0 +1,29 @@
+# systemd unit для basta-watcher.
+#
+# Поправь под себя:
+#   - User=            — под каким пользователем запускать
+#   - WorkingDirectory — куда положил проект
+#   - ExecStart        — путь к python из venv проекта
+#
+# Установка:
+#   sudo cp basta-watcher.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now basta-watcher
+# Логи:
+#   journalctl -u basta-watcher -f    (плюс watcher.log в папке проекта)
+
+[Unit]
+Description=Basta 29.08 Luzhniki ticket watcher
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=youruser
+WorkingDirectory=/home/youruser/basta-watcher
+ExecStart=/home/youruser/basta-watcher/venv/bin/python basta_watcher.py
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,11 @@
+# Один сервис-вотчер. Конфиг — из .env рядом с compose-файлом,
+# state.json/watcher.log — в ./data, переживают пересборку контейнера.
+services:
+  watcher:
+    build: .
+    env_file: .env
+    environment:
+      DATA_DIR: /data
+    volumes:
+      - ./data:/data
+    restart: unless-stopped

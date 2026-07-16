@@ -1,0 +1,13 @@
+venv/
+.env
+.env.example
+data/
+state.json
+watcher.log*
+hallplan_dump.json
+__pycache__/
+.git/
+.github/
+tests/
+README.md
+basta-watcher.service

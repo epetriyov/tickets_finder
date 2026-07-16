@@ -1,0 +1,133 @@
+# basta-watcher
+
+Мониторинг билетов на Басту — **29 августа 2026, 19:00, БСА «Лужники»**
+(https://afisha.yandex.ru/moscow/concert/basta-2026-08-29).
+
+Шлёт в Telegram уведомление, когда находит **2 и более соседних свободных
+места в одном ряду** по цене **не дороже 15000₽** каждое (пороги настраиваются
+в `.env`).
+
+## Почему тут нет Playwright и «лёгкой/глубокой» проверки
+
+Изначально план был двухуровневый: дешёвый `requests`-чек фразы «Билетов
+сейчас нет» + тяжёлый Playwright для разбора схемы зала. При разведке
+(15.07.2026) выяснилось, что всё проще:
+
+1. Фразы «Билетов сейчас нет» в сыром HTML **нет вообще** — её рисует JS,
+   так что проверка по ней не работала бы в принципе.
+2. Схема зала — это iframe `widget.afisha.yandex.ru`, и у него есть открытый
+   JSON API, который отвечает обычному GET **без cookies и без браузера**:
+
+   ```
+   GET https://widget.afisha.yandex.ru/api/tickets/v1/sessions/{SESSION_KEY}/hallplan/async?clientKey={CLIENT_KEY}
+   ```
+
+   В ответе — все свободные места сразу: сектор, ряд, место, цена, сбор
+   (цены в копейках). Занятых мест в ответе нет. Подробное описание формата —
+   в шапке `afisha_api.py`.
+
+Поэтому скрипт просто опрашивает этот API раз в `CHECK_INTERVAL_SECONDS`
+(по умолчанию 60 сек с джиттером) — это и есть вся «глубокая проверка»,
+Playwright не нужен.
+
+`SESSION_KEY` — это base64 от `2966|732357|3292147|1788019200000`, где
+последнее число — timestamp сеанса (29.08.2026 19:00 МСК). Ключ 30 августа
+отличается только timestamp-ом (`...1788105600000`), он указан в
+`.env.example` — можно запустить второй экземпляр на соседнюю дату.
+
+## Установка (Linux-сервер)
+
+```bash
+cd ~/basta-watcher
+python3 -m venv venv
+venv/bin/pip install -r requirements.txt
+cp .env.example .env
+nano .env   # вписать TELEGRAM_BOT_TOKEN и TELEGRAM_CHAT_ID
+```
+
+### Как узнать свой chat_id
+
+1. Напиши своему боту любое сообщение в Telegram.
+2. Открой `https://api.telegram.org/bot<ТОКЕН>/getUpdates`.
+3. В ответе найди `"chat":{"id":123456789,...}` — это и есть `TELEGRAM_CHAT_ID`.
+
+## Проверка перед запуском
+
+```bash
+venv/bin/python basta_watcher.py --check   # разовая проверка: что доступно прямо сейчас (без Telegram)
+venv/bin/python basta_watcher.py --test    # тестовое сообщение в Telegram
+venv/bin/python basta_watcher.py --force   # симуляция найденной пары — проверка формата уведомления
+venv/bin/python basta_watcher.py --dump    # сохранить сырой ответ API в hallplan_dump.json (для отладки)
+```
+
+Важно: на момент создания скрипта билеты на 29.08 **уже были в продаже**
+(сектора «ограниченная видимость» по 3500–6000₽ и танцпол 6600₽), поэтому
+первый запуск скорее всего сразу пришлёт уведомление со всем, что есть.
+Если эти сектора не интересуют — поставь `IGNORE_LIMITED_VIEW=1` в `.env`,
+тогда бот будет молчать, пока не появятся места с нормальной видимостью.
+
+## Деплой на VPS: Docker + GitHub Actions (основной вариант)
+
+Схема как в jobpilot: деплой по git-тегу `vX.Y.Z` → workflow
+`.github/workflows/deploy.yml` заходит на VPS по SSH, делает checkout тега
+и пересобирает docker compose.
+
+Одноразовая подготовка VPS:
+
+```bash
+sudo git clone https://github.com/epetriyov/tickets_finder /opt/tickets_finder
+cd /opt/tickets_finder
+cp .env.example .env && nano .env    # токен и chat_id
+docker compose up -d --build         # первый запуск руками
+docker compose logs -f watcher
+```
+
+Одноразовая настройка GitHub Secrets (Settings → Secrets and variables →
+Actions): `VPS_HOST`, `VPS_USER`, `VPS_SSH_KEY` (приватный ключ),
+`VPS_APP_DIR` (опционально, по умолчанию `/opt/tickets_finder`).
+
+Дальше каждый деплой — это:
+
+```bash
+git tag v1.0.1 && git push origin v1.0.1
+```
+
+`state.json` и `watcher.log` живут в `./data` (volume), так что пересборка
+контейнера не приводит к повторным уведомлениям. CI (`ci.yml`) гоняет
+pytest на каждый push/PR в main.
+
+## Альтернатива без Docker: systemd
+
+```bash
+# поправь пути и пользователя внутри basta-watcher.service, затем:
+sudo cp basta-watcher.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now basta-watcher
+journalctl -u basta-watcher -f
+```
+
+Скрипт не падает при сетевых ошибках: логирует в `watcher.log` (с ротацией)
+и ждёт следующую итерацию. Если 20 проверок подряд не удались — пришлёт
+предупреждение в Telegram. `Restart=on-failure` в юните подстрахует от
+совсем неожиданных смертей процесса.
+
+## Как это ведёт себя
+
+- Каждую минуту скрипт получает полный список свободных мест и ищет цепочки
+  из `SEATS_NEEDED`+ соседних мест не дороже `MAX_PRICE_PER_TICKET`.
+- Пересекающиеся пары схлопываются: «места 8–14 (7 шт.)» — одна строка,
+  а не шесть пар.
+- О каждой цепочке уведомляет **один раз** (`state.json` хранит уже
+  показанные места). Если цепочка лишь укоротилась — молчит; если появились
+  новые места (новый сектор, возвраты) — присылает новое сообщение.
+- Покупка — вручную и быстро: бот присылает ссылку, дальше сам. Хорошие
+  места разбирают за минуты.
+
+## Если API изменится / перестанет отвечать
+
+- `--check` начнёт стабильно падать с ошибкой, в `watcher.log` будет причина.
+- Открой страницу концерта в браузере → DevTools → Network → фильтр
+  `hallplan` → сравни URL и структуру ответа с описанием в `afisha_api.py`
+  и поправь `CLIENT_KEY`/`SESSION_KEY` в `.env` или парсер в `extract_seats()`.
+- Если вместо JSON приходит HTML — это антибот/капча: увеличь
+  `CHECK_INTERVAL_SECONDS` (например до 180) и/или запусти с другого IP.
