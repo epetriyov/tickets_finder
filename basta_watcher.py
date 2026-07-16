@@ -20,6 +20,7 @@ import logging
 import os
 import random
 import sys
+import threading
 import time
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -80,7 +81,7 @@ def load_config():
         "session_key": os.getenv("SESSION_KEY", DEFAULT_SESSION_KEY),
         "client_key": os.getenv("CLIENT_KEY", DEFAULT_CLIENT_KEY),
         "target_url": os.getenv("TARGET_URL", DEFAULT_TARGET_URL),
-        "interval": int(os.getenv("CHECK_INTERVAL_SECONDS", "60")),
+        "interval": int(os.getenv("CHECK_INTERVAL_SECONDS", "30")),
         "max_price": int(os.getenv("MAX_PRICE_PER_TICKET", "15000")),
         "seats_needed": int(os.getenv("SEATS_NEEDED", "2")),
         # 1 = не уведомлять о секторах "(ограниченная видимость)"
@@ -144,6 +145,84 @@ def check_once(cfg):
     return runs
 
 
+HELP_TEXT = (
+    "Команды:\n"
+    "/check — что доступно прямо сейчас (по настроенным критериям)\n"
+    "/check all — то же, но включая сектора с ограниченной видимостью"
+)
+
+
+def handle_command(cfg, text):
+    """Обрабатывает команду из Telegram. Возвращает текст ответа или None."""
+    parts = text.split()
+    cmd = parts[0].lower().split("@")[0]  # '/check@БотИмя' -> '/check'
+
+    if cmd in ("/start", "/help"):
+        return HELP_TEXT
+
+    if cmd == "/check":
+        cfg_check = dict(cfg)
+        if len(parts) > 1 and parts[1].lower() in ("all", "все", "всё"):
+            cfg_check["ignore_limited_view"] = False
+        try:
+            runs = check_once(cfg_check)
+        except Exception as exc:  # noqa: BLE001 — ошибку показываем пользователю
+            log.exception("ручная проверка не удалась")
+            return "Ошибка проверки: {}".format(exc)
+        if not runs:
+            return "Подходящих мест сейчас нет (≤{}₽, {} рядом{}).".format(
+                cfg_check["max_price"], cfg_check["seats_needed"],
+                ", без ограниченной видимости" if cfg_check["ignore_limited_view"] else "",
+            )
+        lines = ["Сейчас доступно ({} вариантов):".format(len(runs)), ""]
+        for run in runs[:MAX_RUNS_PER_MESSAGE]:
+            lines.append(format_run_line(run))
+        if len(runs) > MAX_RUNS_PER_MESSAGE:
+            lines.append("…и ещё {}".format(len(runs) - MAX_RUNS_PER_MESSAGE))
+        lines += ["", cfg["target_url"]]
+        return "\n".join(lines)
+
+    return None  # незнакомые сообщения молча игнорируем
+
+
+def bot_command_loop(cfg):
+    """Фоновый поток: long polling входящих команд бота.
+
+    Если у бота активен webhook (занят другим сервисом) — getUpdates невозможен;
+    тогда команды отключаются, но мониторинг продолжает работать.
+    """
+    offset = None
+    while True:
+        try:
+            updates = telegram_notify.get_updates(cfg["token"], offset=offset)
+        except telegram_notify.WebhookConflict:
+            log.warning(
+                "бот-команды: у бота активен webhook, /check недоступен. "
+                "Нужен отдельный бот для вотчера (см. README). Повтор через 10 мин."
+            )
+            time.sleep(600)
+            continue
+        except telegram_notify.TelegramError as exc:
+            log.warning("бот-команды: getUpdates не удался: %s", exc)
+            time.sleep(30)
+            continue
+
+        for upd in updates:
+            offset = upd["update_id"] + 1
+            try:
+                msg = upd.get("message") or {}
+                text = (msg.get("text") or "").strip()
+                chat = (msg.get("chat") or {}).get("id")
+                if not text or str(chat) != str(cfg["chat_id"]):
+                    continue  # реагируем только на свой чат
+                log.info("бот-команды: получено %r", text.split()[0])
+                reply = handle_command(cfg, text)
+                if reply:
+                    telegram_notify.send_message(cfg["token"], cfg["chat_id"], reply)
+            except Exception:  # noqa: BLE001 — поток команд не должен умирать
+                log.exception("бот-команды: ошибка обработки update")
+
+
 def watch_loop(cfg):
     state = load_state()
     consecutive_errors = 0
@@ -154,6 +233,10 @@ def watch_loop(cfg):
         "игнорировать ограниченную видимость: %s",
         cfg["interval"], cfg["max_price"], cfg["seats_needed"], cfg["ignore_limited_view"],
     )
+
+    threading.Thread(target=bot_command_loop, args=(cfg,), daemon=True,
+                     name="bot-commands").start()
+    log.info("бот-команды: поток long polling запущен (/check)")
 
     while True:
         try:

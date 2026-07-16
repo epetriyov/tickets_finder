@@ -91,6 +91,15 @@ def test_find_runs_does_not_join_rows_or_levels():
     assert find_runs(extract_seats(hp), max_price=15000, seats_needed=2) == []
 
 
+def test_handle_command_help_and_unknown():
+    import basta_watcher
+    cfg = {"max_price": 15000, "seats_needed": 2, "ignore_limited_view": True,
+           "target_url": "https://example.com"}
+    assert "/check" in basta_watcher.handle_command(cfg, "/start")
+    assert basta_watcher.handle_command(cfg, "/help@SomeBot") == basta_watcher.HELP_TEXT
+    assert basta_watcher.handle_command(cfg, "просто текст") is None
+
+
 def test_find_runs_sorted_by_price_then_numeric_row():
     hp = hallplan(
         level("Сектор A", [seat(10, 1, 7000), seat(10, 2, 7000),
