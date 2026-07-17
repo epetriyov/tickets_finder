@@ -2,6 +2,7 @@ venv/
 .env
 data/
 state.json
+health.json
 watcher.log*
 hallplan_dump.json
 __pycache__/

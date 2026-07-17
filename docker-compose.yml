@@ -9,3 +9,11 @@ services:
     volumes:
       - ./data:/data
     restart: unless-stopped
+    # Жив ли цикл: вотчер обновляет /data/health.json после каждой итерации.
+    # Допуск — 3 интервала проверки (минимум 90с), чтобы не мигать на джиттере.
+    healthcheck:
+      test: ["CMD", "python", "-c", "import json,os,sys,time; d=json.load(open('/data/health.json')); lim=max(90, 3*int(os.getenv('CHECK_INTERVAL_SECONDS') or 30)); sys.exit(0 if time.time()-d['ts'] < lim else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s

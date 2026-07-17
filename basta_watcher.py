@@ -44,6 +44,8 @@ DATA_DIR = Path(os.getenv("DATA_DIR", str(BASE_DIR)))
 STATE_FILE = DATA_DIR / "state.json"
 LOG_FILE = DATA_DIR / "watcher.log"
 DUMP_FILE = DATA_DIR / "hallplan_dump.json"
+# Обновляется после каждой итерации; по нему работает Docker healthcheck
+HEALTH_FILE = DATA_DIR / "health.json"
 
 # Ключ сеанса 29.08.2026 19:00 = base64("2966|732357|3292147|1788019200000").
 # Для 30.08 последний блок был бы 1788105600000 (ключ ...MTA1NjAwMDAw).
@@ -53,8 +55,8 @@ DEFAULT_SESSION_KEY = "Mjk2Nnw3MzIzNTd8MzI5MjE0N3wxNzg4MDE5MjAwMDAw"
 DEFAULT_CLIENT_KEY = "f6dc63f9-18ab-471b-89ff-eb9773910840"
 DEFAULT_TARGET_URL = "https://afisha.yandex.ru/moscow/concert/basta-2026-08-29"
 
-MAX_RUNS_PER_MESSAGE = 12  # больше вариантов в одно сообщение не влезает читабельно
-ERRORS_BEFORE_ALERT = 20   # столько ошибок подряд -> предупреждение в Telegram
+MAX_RUNS_PER_MESSAGE = 12       # больше вариантов в одно сообщение не влезает читабельно
+ERROR_ALERT_COOLDOWN = 3600     # повторный алерт об ошибках не чаще раза в час
 
 
 def setup_logging():
@@ -94,6 +96,9 @@ def load_config():
         "seats_needed": int(os.getenv("SEATS_NEEDED", "2")),
         # 1 = не уведомлять о секторах "(ограниченная видимость)"
         "ignore_limited_view": os.getenv("IGNORE_LIMITED_VIEW", "0") == "1",
+        # мониторинг: heartbeat раз в N часов, алерт после N ошибок подряд
+        "heartbeat_hours": float(os.getenv("HEARTBEAT_HOURS", "12")),
+        "error_alert_threshold": int(os.getenv("ERROR_ALERT_THRESHOLD", "5")),
     }
 
 
@@ -245,16 +250,60 @@ def bot_command_loop(cfg):
                 log.exception("бот-команды: ошибка обработки update")
 
 
+def write_health(ok, consecutive_errors, last_error=None):
+    """Файл-маячок для Docker healthcheck: свежесть = живость цикла."""
+    try:
+        tmp = HEALTH_FILE.with_suffix(".htmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({
+                "ts": time.time(),
+                "ok": ok,
+                "consecutive_errors": consecutive_errors,
+                "last_error": str(last_error) if last_error else None,
+            }, f, ensure_ascii=False)
+        tmp.replace(HEALTH_FILE)
+    except OSError as exc:
+        log.warning("не удалось записать %s: %s", HEALTH_FILE, exc)
+
+
+def describe_criteria(cfg):
+    return "сектора {}, ≤{}₽, {} рядом, интервал {}с".format(
+        cfg["sectors_raw"], cfg["max_price"], cfg["seats_needed"], cfg["interval"]
+    )
+
+
+def format_heartbeat(cfg, stats, consecutive_errors):
+    hours = (time.time() - stats["since"]) / 3600
+    lines = [
+        "💓 basta-watcher работает ({})".format(describe_criteria(cfg)),
+        "За последние {:.1f} ч: проверок {}, ошибок {}.".format(
+            hours, stats["checks"], stats["errors"]),
+    ]
+    if stats["last_runs"]:
+        lines.append("Сейчас подходящих вариантов: {}.".format(stats["last_runs"]))
+    else:
+        lines.append("Подходящих мест в целевых секторах пока нет — жду.")
+    if consecutive_errors:
+        lines.append("⚠️ Текущая серия ошибок: {} подряд.".format(consecutive_errors))
+    return "\n".join(lines)
+
+
 def watch_loop(cfg):
     state = load_state()
     consecutive_errors = 0
-    error_alert_sent = False
+    last_error = None
+    error_alerted = False   # активен ли сейчас алерт о серии ошибок
+    last_alert_ts = 0.0
+    stats = {"since": time.time(), "checks": 0, "errors": 0, "last_runs": 0}
+    last_heartbeat = time.time()
 
-    log.info(
-        "старт мониторинга: интервал %sс, максимум %s₽/билет, мест рядом: %s, "
-        "сектора: %s, игнорировать ограниченную видимость: %s",
-        cfg["interval"], cfg["max_price"], cfg["seats_needed"],
-        cfg["sectors_raw"], cfg["ignore_limited_view"],
+    log.info("старт мониторинга: %s, игнорировать ограниченную видимость: %s",
+             describe_criteria(cfg), cfg["ignore_limited_view"])
+
+    telegram_notify.send_message(
+        cfg["token"], cfg["chat_id"],
+        "🚀 basta-watcher запущен: {}.\nHeartbeat каждые {:g} ч.".format(
+            describe_criteria(cfg), cfg["heartbeat_hours"]),
     )
 
     threading.Thread(target=bot_command_loop, args=(cfg,), daemon=True,
@@ -262,10 +311,20 @@ def watch_loop(cfg):
     log.info("бот-команды: поток long polling запущен (/check)")
 
     while True:
+        ok = True
         try:
             runs = check_once(cfg)
+            stats["checks"] += 1
+            stats["last_runs"] = len(runs)
+            if error_alerted:
+                telegram_notify.send_message(
+                    cfg["token"], cfg["chat_id"],
+                    "✅ basta-watcher: Афиша снова отвечает "
+                    "(было {} ошибок подряд).".format(consecutive_errors),
+                )
             consecutive_errors = 0
-            error_alert_sent = False
+            last_error = None
+            error_alerted = False
 
             # Уведомляем только о цепочках, где есть хоть одно ещё не виденное место.
             # Если цепочка лишь укоротилась (часть мест раскупили) — это не новость.
@@ -283,17 +342,42 @@ def watch_loop(cfg):
                 # если отправка не удалась — state не трогаем,
                 # попробуем уведомить на следующей итерации
         except afisha_api.HallplanError as exc:
+            ok = False
             consecutive_errors += 1
+            stats["errors"] += 1
+            last_error = exc
             log.warning("проверка не удалась (%s подряд): %s", consecutive_errors, exc)
-            if consecutive_errors >= ERRORS_BEFORE_ALERT and not error_alert_sent:
-                error_alert_sent = telegram_notify.send_message(
-                    cfg["token"], cfg["chat_id"],
-                    "⚠️ basta-watcher: {} проверок подряд не удались "
-                    "(последняя ошибка: {}). Проверь сервер/логи.".format(consecutive_errors, exc),
-                )
-        except Exception:  # noqa: BLE001 — процесс не должен падать ни при каких условиях
+        except Exception as exc:  # noqa: BLE001 — процесс не должен падать ни при каких условиях
+            ok = False
             consecutive_errors += 1
+            stats["errors"] += 1
+            last_error = exc
             log.exception("неожиданная ошибка (%s подряд)", consecutive_errors)
+
+        # Алерт о серии ошибок: быстро (после error_alert_threshold подряд),
+        # повторно — не чаще ERROR_ALERT_COOLDOWN, пока серия продолжается.
+        if (consecutive_errors >= cfg["error_alert_threshold"]
+                and time.time() - last_alert_ts >= ERROR_ALERT_COOLDOWN):
+            sent = telegram_notify.send_message(
+                cfg["token"], cfg["chat_id"],
+                "⚠️ basta-watcher: {} проверок подряд не удались.\n"
+                "Последняя ошибка: {}\n"
+                "Логи: docker compose logs watcher".format(consecutive_errors, last_error),
+            )
+            if sent:
+                error_alerted = True
+                last_alert_ts = time.time()
+
+        write_health(ok, consecutive_errors, last_error)
+
+        if time.time() - last_heartbeat >= cfg["heartbeat_hours"] * 3600:
+            telegram_notify.send_message(
+                cfg["token"], cfg["chat_id"],
+                format_heartbeat(cfg, stats, consecutive_errors),
+            )
+            last_heartbeat = time.time()
+            stats = {"since": time.time(), "checks": 0, "errors": 0,
+                     "last_runs": stats["last_runs"]}
 
         # лёгкий джиттер, чтобы запросы не шли строго раз в N секунд
         time.sleep(cfg["interval"] * random.uniform(0.85, 1.15))
