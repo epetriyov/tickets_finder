@@ -26,12 +26,16 @@ SESSION_KEY — base64 от "2966|732357|3292147|1788019200000"
 с описанной выше. Править нужно в первую очередь extract_seats().
 """
 
+import base64
 import logging
 import re
+from datetime import datetime, timedelta, timezone
 
 import requests
 
 log = logging.getLogger("watcher.api")
+
+MSK = timezone(timedelta(hours=3))
 
 WIDGET_BASE = "https://widget.afisha.yandex.ru"
 
@@ -48,6 +52,94 @@ HEADERS = {
 
 class HallplanError(Exception):
     """Не удалось получить/разобрать схему зала."""
+
+
+# --- Автоопределение сеанса по ссылке на событие -------------------------
+#
+# Ключ сеанса — base64 от "A|B|C|D", где D — timestamp сеанса в миллисекундах
+# (пример: "2966|732357|3292147|1788019200000" = Баста 29.08.2026 19:00 МСК).
+# Такие ключи вшиты в HTML страницы события (embedded Apollo-state), поэтому
+# их можно достать обычным GET без JS.
+
+# Ключ встречается и отдельной строкой ("id":"Mjk2..."), и с префиксом
+# в ключах Apollo-кэша ("Ticket:Mjk2...")
+_B64_CANDIDATE_RE = re.compile(r'"(?:[A-Za-z]+:)?([A-Za-z0-9+/]{24,}={0,2})"')
+_SESSION_DEC_RE = re.compile(r"(\d+)\|(\d+)\|(\d+)\|(\d{13})")
+
+
+def extract_sessions(html_text):
+    """Все ключи сеансов со страницы события: {key: (datetime_msk, event_id)}."""
+    out = {}
+    for m in _B64_CANDIDATE_RE.finditer(html_text):
+        cand = m.group(1)
+        try:
+            dec = base64.b64decode(cand + "=" * (-len(cand) % 4)).decode("ascii")
+        except (ValueError, UnicodeDecodeError):
+            continue
+        mm = _SESSION_DEC_RE.fullmatch(dec)
+        if mm:
+            dt = datetime.fromtimestamp(int(mm.group(4)) / 1000, MSK)
+            out[cand] = (dt, mm.group(2))
+    return out
+
+
+def extract_event_name(html_text):
+    """Название события из og:title/<title>, без афишных префиксов/суффиксов."""
+    m = re.search(r'<meta\s+property="og:title"\s+content="([^"]+)"', html_text)
+    if not m:
+        m = re.search(r"<title>([^<]+)</title>", html_text)
+    name = m.group(1) if m else ""
+    name = re.sub(r"^Билеты на\s+", "", name)
+    # в суффиксе бывает неразрывный пробел: "…на Яндекс\xa0Афише"
+    name = re.sub(r"\s+—[^—]*Яндекс\s+Афише\s*$", "", name)
+    return name.strip() or "событие"
+
+
+def pick_session(sessions, session_date=None):
+    """Выбирает единственный сеанс. sessions — результат extract_sessions().
+
+    session_date ("YYYY-MM-DD", дата по МСК) обязателен, когда у события
+    несколько сеансов. Возвращает (key, datetime_msk); при неоднозначности
+    бросает ValueError с перечнем доступных дат.
+    """
+    if not sessions:
+        raise ValueError(
+            "на странице не нашлось ключей сеансов — TARGET_URL должен вести "
+            "на страницу события afisha.yandex.ru (или формат страницы изменился)"
+        )
+    if session_date:
+        matched = {k: v for k, v in sessions.items()
+                   if v[0].strftime("%Y-%m-%d") == session_date}
+    else:
+        matched = dict(sessions)
+
+    all_dates = sorted({v[0].strftime("%Y-%m-%d %H:%M") for v in sessions.values()})
+    if not matched:
+        raise ValueError("нет сеанса на {}; на странице найдены: {}".format(
+            session_date, ", ".join(all_dates)))
+    if len({v[0] for v in matched.values()}) > 1 or len({v[1] for v in matched.values()}) > 1:
+        raise ValueError(
+            "несколько сеансов ({}) — задай SESSION_DATE (YYYY-MM-DD), "
+            "чтобы выбрать нужный".format(", ".join(all_dates)))
+    key = next(iter(matched))
+    return key, matched[key][0]
+
+
+def resolve_session(event_url, session_date=None, timeout=30):
+    """(session_key, event_name, datetime_msk) по ссылке на событие Афиши."""
+    headers = dict(HEADERS)
+    headers["Accept"] = "text/html,application/xhtml+xml,*/*;q=0.8"
+    try:
+        resp = requests.get(event_url, headers=headers, timeout=timeout)
+    except requests.RequestException as exc:
+        raise HallplanError("не удалось загрузить страницу события: {}".format(exc)) from exc
+    if resp.status_code != 200:
+        raise HallplanError("страница события: HTTP {}".format(resp.status_code))
+    try:
+        key, dt = pick_session(extract_sessions(resp.text), session_date)
+    except ValueError as exc:
+        raise HallplanError(str(exc)) from exc
+    return key, extract_event_name(resp.text), dt
 
 
 # Кириллические двойники латинских букв: пользователь может написать "С134"

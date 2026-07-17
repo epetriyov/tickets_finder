@@ -14,7 +14,9 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 import pytest
 
-from afisha_api import buy_link, extract_seats, find_runs, parse_sectors, sector_matches
+from afisha_api import (MSK, buy_link, extract_event_name, extract_seats,
+                        extract_sessions, find_runs, parse_sectors,
+                        pick_session, sector_matches)
 
 
 def seat(row, place, price_rub, seat_id=None):
@@ -102,6 +104,41 @@ def test_find_runs_does_not_join_rows_or_levels():
         level("Сектор B", [seat(1, 6, 5000)]),
     )
     assert find_runs(extract_seats(hp), max_price=15000, seats_needed=2) == []
+
+
+FAKE_EVENT_HTML = """
+<html><head>
+<title>Билеты на «Баста» в БСА «Лужники» — концерты в Москве на Яндекс Афише</title>
+</head><body>
+{"Ticket:Mjk2Nnw3MzIzNTd8MzI5MjE0N3wxNzg4MDE5MjAwMDAw":{"saleStatus":"available"},
+ "Ticket:Mjk2Nnw3MzIzNTd8MzI5MjE0N3wxNzg4MTA1NjAwMDAw":{"saleStatus":"available"},
+ "hash":"c29tZS1yYW5kb20tbm9uc2Vuc2U0Mg=="}
+</body></html>
+"""
+
+
+def test_extract_sessions_and_pick():
+    sessions = extract_sessions(FAKE_EVENT_HTML)
+    # два сеанса (29 и 30 августа), случайный base64-мусор отброшен
+    assert len(sessions) == 2
+    key29 = "Mjk2Nnw3MzIzNTd8MzI5MjE0N3wxNzg4MDE5MjAwMDAw"
+    dt, event_id = sessions[key29]
+    assert (dt.strftime("%Y-%m-%d %H:%M"), event_id) == ("2026-08-29 19:00", "732357")
+
+    picked_key, picked_dt = pick_session(sessions, "2026-08-29")
+    assert picked_key == key29 and picked_dt == dt
+
+    with pytest.raises(ValueError):  # две даты без SESSION_DATE — неоднозначно
+        pick_session(sessions)
+    with pytest.raises(ValueError):  # нет сеанса на эту дату
+        pick_session(sessions, "2026-08-31")
+    with pytest.raises(ValueError):  # пустая страница
+        pick_session({})
+
+
+def test_extract_event_name():
+    assert extract_event_name(FAKE_EVENT_HTML) == "«Баста» в БСА «Лужники»"
+    assert extract_event_name("<html></html>") == "событие"
 
 
 def test_parse_sectors():

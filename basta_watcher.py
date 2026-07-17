@@ -47,9 +47,6 @@ DUMP_FILE = DATA_DIR / "hallplan_dump.json"
 # Обновляется после каждой итерации; по нему работает Docker healthcheck
 HEALTH_FILE = DATA_DIR / "health.json"
 
-# Ключ сеанса 29.08.2026 19:00 = base64("2966|732357|3292147|1788019200000").
-# Для 30.08 последний блок был бы 1788105600000 (ключ ...MTA1NjAwMDAw).
-DEFAULT_SESSION_KEY = "Mjk2Nnw3MzIzNTd8MzI5MjE0N3wxNzg4MDE5MjAwMDAw"
 # clientKey, с которым официальный виджет ходит в собственный API
 # (подсмотрен в DevTools 15.07.2026; если перестанет работать — см. README).
 DEFAULT_CLIENT_KEY = "f6dc63f9-18ab-471b-89ff-eb9773910840"
@@ -88,7 +85,10 @@ def load_config():
         "sectors": sectors,
         "token": os.getenv("TELEGRAM_BOT_TOKEN", ""),
         "chat_id": os.getenv("TELEGRAM_CHAT_ID", ""),
-        "session_key": os.getenv("SESSION_KEY", DEFAULT_SESSION_KEY),
+        # Пусто = определить автоматически со страницы TARGET_URL (+SESSION_DATE)
+        "session_key": os.getenv("SESSION_KEY", ""),
+        "session_date": os.getenv("SESSION_DATE", ""),
+        "event_name": os.getenv("EVENT_NAME", ""),
         "client_key": os.getenv("CLIENT_KEY", DEFAULT_CLIENT_KEY),
         "target_url": os.getenv("TARGET_URL", DEFAULT_TARGET_URL),
         "interval": int(os.getenv("CHECK_INTERVAL_SECONDS", "30")),
@@ -142,7 +142,8 @@ def format_run_line_html(run, cfg):
 
 def format_message(runs, cfg):
     """HTML-сообщение: каждая строка — прямая ссылка на покупку этих мест."""
-    lines = ["🎟 Баста 29.08, БСА «Лужники» — есть места рядом (≤{}₽)!".format(cfg["max_price"]),
+    lines = ["🎟 {}: есть места рядом (≤{}₽)!".format(
+                 html.escape(cfg.get("event_name") or "событие"), cfg["max_price"]),
              "Клик по варианту сразу кладёт места в корзину:", ""]
     for run in runs[:MAX_RUNS_PER_MESSAGE]:
         lines.append(format_run_line_html(run, cfg))
@@ -275,7 +276,8 @@ def describe_criteria(cfg):
 def format_heartbeat(cfg, stats, consecutive_errors):
     hours = (time.time() - stats["since"]) / 3600
     lines = [
-        "💓 basta-watcher работает ({})".format(describe_criteria(cfg)),
+        "💓 basta-watcher следит за «{}» ({})".format(
+            cfg.get("event_name") or "событие", describe_criteria(cfg)),
         "За последние {:.1f} ч: проверок {}, ошибок {}.".format(
             hours, stats["checks"], stats["errors"]),
     ]
@@ -297,12 +299,13 @@ def watch_loop(cfg):
     stats = {"since": time.time(), "checks": 0, "errors": 0, "last_runs": 0}
     last_heartbeat = time.time()
 
-    log.info("старт мониторинга: %s, игнорировать ограниченную видимость: %s",
-             describe_criteria(cfg), cfg["ignore_limited_view"])
+    log.info("старт мониторинга: «%s», %s, игнорировать ограниченную видимость: %s",
+             cfg.get("event_name"), describe_criteria(cfg), cfg["ignore_limited_view"])
 
     telegram_notify.send_message(
         cfg["token"], cfg["chat_id"],
-        "🚀 basta-watcher запущен: {}.\nHeartbeat каждые {:g} ч.".format(
+        "🚀 basta-watcher запущен: {}\n{}.\nHeartbeat каждые {:g} ч.".format(
+            cfg.get("event_name") or cfg["target_url"],
             describe_criteria(cfg), cfg["heartbeat_hours"]),
     )
 
@@ -431,6 +434,20 @@ def cmd_dump(cfg):
     return 0
 
 
+def ensure_session(cfg):
+    """Заполняет session_key/event_name: из .env или автоматически по TARGET_URL."""
+    if not cfg["session_key"]:
+        key, name, dt = afisha_api.resolve_session(
+            cfg["target_url"], cfg["session_date"] or None)
+        cfg["session_key"] = key
+        if not cfg["event_name"]:
+            cfg["event_name"] = "{} — {}".format(name, dt.strftime("%d.%m.%Y %H:%M"))
+        log.info("сеанс определён по TARGET_URL: «%s», ключ %s…",
+                 cfg["event_name"], key[:16])
+    elif not cfg["event_name"]:
+        cfg["event_name"] = "событие"
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -451,6 +468,12 @@ def main():
 
     if args.test:
         return cmd_test(cfg)
+
+    try:
+        ensure_session(cfg)
+    except afisha_api.HallplanError as exc:
+        print("Не удалось определить сеанс: {}".format(exc), file=sys.stderr)
+        return 1
     if args.force:
         return cmd_force(cfg)
     if args.check:
