@@ -1,4 +1,4 @@
-# systemd unit для basta-watcher.
+# systemd unit для tickets-watcher.
 #
 # Поправь под себя:
 #   - User=            — под каким пользователем запускать
@@ -6,22 +6,22 @@
 #   - ExecStart        — путь к python из venv проекта
 #
 # Установка:
-#   sudo cp basta-watcher.service /etc/systemd/system/
+#   sudo cp tickets-watcher.service /etc/systemd/system/
 #   sudo systemctl daemon-reload
-#   sudo systemctl enable --now basta-watcher
+#   sudo systemctl enable --now tickets-watcher
 # Логи:
-#   journalctl -u basta-watcher -f    (плюс watcher.log в папке проекта)
+#   journalctl -u tickets-watcher -f    (плюс watcher.log в папке проекта)
 
 [Unit]
-Description=Basta 29.08 Luzhniki ticket watcher
+Description=Yandex Afisha ticket watcher
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
 User=youruser
-WorkingDirectory=/home/youruser/basta-watcher
-ExecStart=/home/youruser/basta-watcher/venv/bin/python basta_watcher.py
+WorkingDirectory=/home/youruser/tickets-watcher
+ExecStart=/home/youruser/tickets-watcher/venv/bin/python tickets_watcher.py
 Restart=on-failure
 RestartSec=30
 

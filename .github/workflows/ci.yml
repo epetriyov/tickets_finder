@@ -14,5 +14,5 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -r requirements.txt pytest
-      - run: python -m py_compile basta_watcher.py afisha_api.py telegram_notify.py
+      - run: python -m py_compile tickets_watcher.py afisha_api.py telegram_notify.py
       - run: python -m pytest -q

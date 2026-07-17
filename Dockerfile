@@ -10,9 +10,9 @@ WORKDIR /app
 COPY requirements.txt ./
 RUN pip install -r requirements.txt
 
-COPY afisha_api.py basta_watcher.py telegram_notify.py ./
+COPY afisha_api.py tickets_watcher.py telegram_notify.py ./
 
 # state.json и watcher.log — в volume (см. docker-compose.yml)
 ENV DATA_DIR=/data
 
-CMD ["python", "basta_watcher.py"]
+CMD ["python", "tickets_watcher.py"]

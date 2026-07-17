@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Мониторинг билетов на Басту (29.08.2026, 19:00, БСА «Лужники»).
+"""Мониторинг билетов на события Яндекс Афиши (событие задаётся в .env).
 
 Опрашивает API виджета Яндекс Билетов (см. afisha_api.py) и присылает в
 Telegram уведомление, когда находит >= SEATS_NEEDED соседних свободных мест
@@ -276,7 +276,7 @@ def describe_criteria(cfg):
 def format_heartbeat(cfg, stats, consecutive_errors):
     hours = (time.time() - stats["since"]) / 3600
     lines = [
-        "💓 basta-watcher следит за «{}» ({})".format(
+        "💓 tickets-watcher следит за «{}» ({})".format(
             cfg.get("event_name") or "событие", describe_criteria(cfg)),
         "За последние {:.1f} ч: проверок {}, ошибок {}.".format(
             hours, stats["checks"], stats["errors"]),
@@ -304,7 +304,7 @@ def watch_loop(cfg):
 
     telegram_notify.send_message(
         cfg["token"], cfg["chat_id"],
-        "🚀 basta-watcher запущен: {}\n{}.\nHeartbeat каждые {:g} ч.".format(
+        "🚀 tickets-watcher запущен: {}\n{}.\nHeartbeat каждые {:g} ч.".format(
             cfg.get("event_name") or cfg["target_url"],
             describe_criteria(cfg), cfg["heartbeat_hours"]),
     )
@@ -322,7 +322,7 @@ def watch_loop(cfg):
             if error_alerted:
                 telegram_notify.send_message(
                     cfg["token"], cfg["chat_id"],
-                    "✅ basta-watcher: Афиша снова отвечает "
+                    "✅ tickets-watcher: Афиша снова отвечает "
                     "(было {} ошибок подряд).".format(consecutive_errors),
                 )
             consecutive_errors = 0
@@ -363,7 +363,7 @@ def watch_loop(cfg):
                 and time.time() - last_alert_ts >= ERROR_ALERT_COOLDOWN):
             sent = telegram_notify.send_message(
                 cfg["token"], cfg["chat_id"],
-                "⚠️ basta-watcher: {} проверок подряд не удались.\n"
+                "⚠️ tickets-watcher: {} проверок подряд не удались.\n"
                 "Последняя ошибка: {}\n"
                 "Логи: docker compose logs watcher".format(consecutive_errors, last_error),
             )
@@ -389,7 +389,7 @@ def watch_loop(cfg):
 def cmd_test(cfg):
     ok = telegram_notify.send_message(
         cfg["token"], cfg["chat_id"],
-        "✅ basta-watcher на связи. Токен и chat_id работают.",
+        "✅ tickets-watcher на связи. Токен и chat_id работают.",
     )
     print("Отправлено." if ok else "НЕ отправлено — смотри watcher.log")
     return 0 if ok else 1

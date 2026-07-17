@@ -172,12 +172,12 @@ def test_extract_seats_sector_filter():
 
 
 def test_handle_command_help_and_unknown():
-    import basta_watcher
+    import tickets_watcher
     cfg = {"max_price": 15000, "seats_needed": 2, "ignore_limited_view": True,
            "target_url": "https://example.com"}
-    assert "/check" in basta_watcher.handle_command(cfg, "/start")
-    assert basta_watcher.handle_command(cfg, "/help@SomeBot") == basta_watcher.HELP_TEXT
-    assert basta_watcher.handle_command(cfg, "просто текст") is None
+    assert "/check" in tickets_watcher.handle_command(cfg, "/start")
+    assert tickets_watcher.handle_command(cfg, "/help@SomeBot") == tickets_watcher.HELP_TEXT
+    assert tickets_watcher.handle_command(cfg, "просто текст") is None
 
 
 def test_find_runs_sorted_by_price_desc_then_numeric_row():

@@ -1,4 +1,4 @@
-# basta-watcher
+# tickets-watcher
 
 Универсальный мониторинг билетов на события Яндекс Афиши. Шлёт в Telegram
 уведомление, когда находит **N соседних свободных мест в одном ряду** не
@@ -55,7 +55,7 @@ Playwright не нужен.
 ## Установка (Linux-сервер)
 
 ```bash
-cd ~/basta-watcher
+cd ~/tickets-watcher
 python3 -m venv venv
 venv/bin/pip install -r requirements.txt
 cp .env.example .env
@@ -71,10 +71,10 @@ nano .env   # вписать TELEGRAM_BOT_TOKEN и TELEGRAM_CHAT_ID
 ## Проверка перед запуском
 
 ```bash
-venv/bin/python basta_watcher.py --check   # разовая проверка: что доступно прямо сейчас (без Telegram)
-venv/bin/python basta_watcher.py --test    # тестовое сообщение в Telegram
-venv/bin/python basta_watcher.py --force   # симуляция найденной пары — проверка формата уведомления
-venv/bin/python basta_watcher.py --dump    # сохранить сырой ответ API в hallplan_dump.json (для отладки)
+venv/bin/python tickets_watcher.py --check   # разовая проверка: что доступно прямо сейчас (без Telegram)
+venv/bin/python tickets_watcher.py --test    # тестовое сообщение в Telegram
+venv/bin/python tickets_watcher.py --force   # симуляция найденной пары — проверка формата уведомления
+venv/bin/python tickets_watcher.py --dump    # сохранить сырой ответ API в hallplan_dump.json (для отладки)
 ```
 
 Важно: на момент создания скрипта билеты на 29.08 **уже были в продаже**
@@ -128,11 +128,11 @@ pytest на каждый push/PR в main.
 ## Альтернатива без Docker: systemd
 
 ```bash
-# поправь пути и пользователя внутри basta-watcher.service, затем:
-sudo cp basta-watcher.service /etc/systemd/system/
+# поправь пути и пользователя внутри tickets-watcher.service, затем:
+sudo cp tickets-watcher.service /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable --now basta-watcher
-journalctl -u basta-watcher -f
+sudo systemctl enable --now tickets-watcher
+journalctl -u tickets-watcher -f
 ```
 
 Скрипт не падает при сетевых ошибках: логирует в `watcher.log` (с ротацией)
