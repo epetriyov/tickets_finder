@@ -14,9 +14,40 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 import pytest
 
-from afisha_api import (MSK, buy_link, extract_event_name, extract_seats,
-                        extract_sessions, find_runs, parse_sectors,
-                        pick_session, sector_matches)
+import afisha_api
+from afisha_api import (MSK, HallplanError, buy_link, extract_event_name,
+                        extract_seats, extract_sessions, fetch_hallplan,
+                        find_runs, parse_sectors, pick_session, sector_matches)
+
+
+class FakeResponse:
+    def __init__(self, payload, status_code=200):
+        self._payload = payload
+        self.status_code = status_code
+
+    def json(self):
+        return self._payload
+
+
+def test_fetch_hallplan_treats_running_without_hallplan_as_no_seats(monkeypatch):
+    # Живой пример 20.07.2026 при распроданном зале: эндпоинт отвечает 200
+    # и status=success, но без result.hallplan вообще — раньше это считалось
+    # ошибкой API и слало часовые алерты, хотя виджет в это же время просто
+    # показывал "Билеты проданы".
+    monkeypatch.setattr(afisha_api.requests, "get", lambda *a, **k: FakeResponse(
+        {"status": "success", "result": {"saleStatus": "available",
+                                         "operationStatus": "running"}}))
+    result = fetch_hallplan("KEY", "CLIENT")
+    assert result == {"availableSeatCount": 0, "levels": []}
+
+
+def test_fetch_hallplan_still_raises_on_genuine_bad_shape(monkeypatch):
+    # Ответ без operationStatus и без hallplan — это уже непонятная поломка,
+    # не "мест нет", должно продолжать считаться ошибкой (алертить).
+    monkeypatch.setattr(afisha_api.requests, "get", lambda *a, **k: FakeResponse(
+        {"status": "success", "result": {}}))
+    with pytest.raises(HallplanError):
+        fetch_hallplan("KEY", "CLIENT")
 
 
 def seat(row, place, price_rub, seat_id=None):

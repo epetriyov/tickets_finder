@@ -229,6 +229,18 @@ def fetch_hallplan(session_key, client_key, timeout=30):
     try:
         return data["result"]["hallplan"]
     except (KeyError, TypeError) as exc:
+        result = data.get("result")
+        if isinstance(result, dict) and "operationStatus" in result:
+            # Наблюдалось 20.07.2026 при распроданном/почти распроданном зале:
+            # {"result":{"saleStatus":"available","operationStatus":"running",...}}
+            # без hallplan вообще — эндпоинт так сигналит "считать нечего",
+            # сам виджет в это же время показывает "Билеты проданы". Это не
+            # сбой API, а легитимное "мест нет" — не поднимаем ошибку.
+            log.info(
+                "hallplan не пришёл (operationStatus=%r) — считаю, что мест нет",
+                result.get("operationStatus"),
+            )
+            return {"availableSeatCount": 0, "levels": []}
         raise HallplanError("нет result.hallplan в ответе") from exc
 
 
