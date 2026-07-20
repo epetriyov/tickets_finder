@@ -96,8 +96,9 @@ def load_config():
         "seats_needed": int(os.getenv("SEATS_NEEDED", "2")),
         # 1 = не уведомлять о секторах "(ограниченная видимость)"
         "ignore_limited_view": os.getenv("IGNORE_LIMITED_VIEW", "0") == "1",
-        # мониторинг: heartbeat раз в N часов, алерт после N ошибок подряд
-        "heartbeat_hours": float(os.getenv("HEARTBEAT_HOURS", "12")),
+        # мониторинг: heartbeat раз в N часов (0 или пусто = выключен),
+        # алерт после N ошибок подряд
+        "heartbeat_hours": float(os.getenv("HEARTBEAT_HOURS") or "0"),
         "error_alert_threshold": int(os.getenv("ERROR_ALERT_THRESHOLD", "5")),
     }
 
@@ -302,11 +303,13 @@ def watch_loop(cfg):
     log.info("старт мониторинга: «%s», %s, игнорировать ограниченную видимость: %s",
              cfg.get("event_name"), describe_criteria(cfg), cfg["ignore_limited_view"])
 
+    heartbeat_note = ("Heartbeat каждые {:g} ч.".format(cfg["heartbeat_hours"])
+                      if cfg["heartbeat_hours"] > 0 else "Heartbeat выключен.")
     telegram_notify.send_message(
         cfg["token"], cfg["chat_id"],
-        "🚀 tickets-watcher запущен: {}\n{}.\nHeartbeat каждые {:g} ч.".format(
+        "🚀 tickets-watcher запущен: {}\n{}.\n{}".format(
             cfg.get("event_name") or cfg["target_url"],
-            describe_criteria(cfg), cfg["heartbeat_hours"]),
+            describe_criteria(cfg), heartbeat_note),
     )
 
     threading.Thread(target=bot_command_loop, args=(cfg,), daemon=True,
@@ -373,7 +376,7 @@ def watch_loop(cfg):
 
         write_health(ok, consecutive_errors, last_error)
 
-        if time.time() - last_heartbeat >= cfg["heartbeat_hours"] * 3600:
+        if cfg["heartbeat_hours"] > 0 and time.time() - last_heartbeat >= cfg["heartbeat_hours"] * 3600:
             telegram_notify.send_message(
                 cfg["token"], cfg["chat_id"],
                 format_heartbeat(cfg, stats, consecutive_errors),
